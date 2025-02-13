@@ -2,28 +2,53 @@ import os
 import time
 import threading
 import logging
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+import pymongo
+from telegram import Update, Document
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from pyrogram import Client
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Token from environment variable
-FILE_PATH = "file_to_send.txt"  # Replace with your actual file
-DELETE_AFTER = 7200  # 2 hours in seconds
+# Environment Variables
+API_ID = 20219694
+API_HASH = "29d9b3a01721ab452fcae79346769e29"
+MONGO_DB = "mongodb+srv://vgbe9:NBQQdJ1vyiFv2v7n@cluster0.zt8br.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+BOT_TOKEN = "7617369848:AAGFt6OrwLts9tNrWBFPqJ9mm15IJ05TBTs"
+OWNER_ID = 6103594386  # Owner Telegram ID
+LOG_CHANNEL = -1002394125551  # Log Channel ID
 
-# Dictionary to keep track of sent files
+# MongoDB Setup
+client = pymongo.MongoClient(MONGO_DB)
+db = client["telegram_bot"]
+users_collection = db["users"]
+
+# Pyrogram Client for Logging
+app = Client("log_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# File Handling
+FILE_PATH = "file_to_send.txt"
+DELETE_AFTER = 7200  # 2 hours in seconds
 sent_files = {}
-users = set()
 
 def start(update: Update, context: CallbackContext) -> None:
     chat_id = update.message.chat_id
-    users.add(chat_id)  # Track unique users
+
+    # Save user in MongoDB
+    if not users_collection.find_one({"chat_id": chat_id}):
+        users_collection.insert_one({"chat_id": chat_id})
+
+    # Send File
     if os.path.exists(FILE_PATH):
         msg = update.message.reply_document(document=open(FILE_PATH, 'rb'), caption="Here is your file!")
-        sent_files[msg.message_id] = time.time()  # Store timestamp
+        sent_files[msg.message_id] = time.time()
         threading.Thread(target=delete_file_after_time, args=(msg.message_id,)).start()
+
+        # Log Message to Owner & Log Channel
+        with app:
+            app.send_message(OWNER_ID, f"User {chat_id} downloaded the file.")
+            app.send_message(LOG_CHANNEL, f"📥 **New Download**\n👤 User: `{chat_id}`\n📂 File Sent Successfully!")
     else:
         update.message.reply_text("Sorry, the file is currently unavailable.")
 
@@ -31,17 +56,38 @@ def delete_file_after_time(message_id):
     time.sleep(DELETE_AFTER)
     if message_id in sent_files:
         del sent_files[message_id]
-        os.remove(FILE_PATH)  # Delete file after 2 hours
+        os.remove(FILE_PATH)
         logger.info("File deleted after 2 hours.")
 
 def stats(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text(f"Total unique users: {len(users)}")
+    total_users = users_collection.count_documents({})
+    update.message.reply_text(f"📊 **Total Users:** {total_users}")
+
+def edit(update: Update, context: CallbackContext) -> None:
+    if update.message.chat_id == OWNER_ID:
+        update.message.reply_text("✅ **अब नई फाइल भेजो, यह यूजर्स को भेजी जाएगी।**")
+        return
+    update.message.reply_text("❌ **तुम्हें इस कमांड को चलाने की परमिशन नहीं है!**")
+
+def receive_document(update: Update, context: CallbackContext) -> None:
+    if update.message.chat_id == OWNER_ID and update.message.document:
+        file = update.message.document.get_file()
+        file.download(FILE_PATH)
+
+        update.message.reply_text("✅ **नई फाइल सेट हो गई! अब ये फाइल सभी यूजर्स को मिलेगी।**")
+
+        # Log the file update
+        with app:
+            app.send_message(LOG_CHANNEL, f"⚡ **File Updated by Owner**\n📁 New File: {update.message.document.file_name}")
 
 def main():
-    updater = Updater(TOKEN)
+    updater = Updater(BOT_TOKEN)
     dp = updater.dispatcher
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("stats", stats))
+    dp.add_handler(CommandHandler("edit", edit))
+    dp.add_handler(MessageHandler(Filters.document & Filters.chat(OWNER_ID), receive_document))
+
     updater.start_polling()
     updater.idle()
 
