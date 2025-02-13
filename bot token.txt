@@ -1,0 +1,49 @@
+import os
+import time
+import threading
+import logging
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext
+
+# Enable logging
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Token from environment variable
+FILE_PATH = "file_to_send.txt"  # Replace with your actual file
+DELETE_AFTER = 7200  # 2 hours in seconds
+
+# Dictionary to keep track of sent files
+sent_files = {}
+users = set()
+
+def start(update: Update, context: CallbackContext) -> None:
+    chat_id = update.message.chat_id
+    users.add(chat_id)  # Track unique users
+    if os.path.exists(FILE_PATH):
+        msg = update.message.reply_document(document=open(FILE_PATH, 'rb'), caption="Here is your file!")
+        sent_files[msg.message_id] = time.time()  # Store timestamp
+        threading.Thread(target=delete_file_after_time, args=(msg.message_id,)).start()
+    else:
+        update.message.reply_text("Sorry, the file is currently unavailable.")
+
+def delete_file_after_time(message_id):
+    time.sleep(DELETE_AFTER)
+    if message_id in sent_files:
+        del sent_files[message_id]
+        os.remove(FILE_PATH)  # Delete file after 2 hours
+        logger.info("File deleted after 2 hours.")
+
+def stats(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text(f"Total unique users: {len(users)}")
+
+def main():
+    updater = Updater(TOKEN)
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("stats", stats))
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    main()
